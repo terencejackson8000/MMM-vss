@@ -1,19 +1,21 @@
 const NodeHelper = require("node_helper");
+const request = require("request-promise-native");
 const { XMLParser } = require("fast-xml-parser");
 const Log = require("logger");
 
 module.exports = NodeHelper.create({
   start() {
-    this.parser = new XMLParser({ ignoreAttributes: false });
-    Log.info("[MMM-VVS] node_helper started");
+    this.parser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: false });
+    Log.info("node_helper started");
   },
 
   async socketNotificationReceived(notification, payload) {
+    Log.debug("socketNotificationReceived: " + notification);
     if (notification !== "VVS_FETCH") return;
 
     try {
-      const { endpoint, originStopPointRef, destinationStopPointRef, numberOfResults, includeIntermediateStops } = payload;
-
+      const { requestorRef, departureTime, endpoint, originStopPointRef, destinationStopPointRef, numberOfResults, includeIntermediateStops } = payload;
+      Log.debug(`VVS_FETCH: ${endpoint} ${originStopPointRef} ${destinationStopPointRef}`);
       if (!endpoint || !originStopPointRef || !destinationStopPointRef) {
         throw new Error("Missing endpoint/originStopPointRef/destinationStopPointRef");
       }
@@ -21,12 +23,14 @@ module.exports = NodeHelper.create({
       const tripXml = this.buildTripRequestXml({
         originStopPointRef,
         destinationStopPointRef,
-        departureTime: new Date().toISOString(),
-        numberOfResults: numberOfResults ?? 5,
+        departureTime: departureTime,
+        numberOfResults: numberOfResults,
+        requestorRef: requestorRef,
         includeIntermediateStops: includeIntermediateStops ?? true
       });
 
       const xmlResponse = await this.postXml(endpoint, tripXml);
+      Log.debug(`Now extracting trips ${xmlResponse}`);
       const trips = this.extractTrips(xmlResponse);
 
       this.sendSocketNotification("VVS_RESULT", { trips });
@@ -35,34 +39,38 @@ module.exports = NodeHelper.create({
     }
   },
 
-  buildTripRequestXml({ originStopPointRef, destinationStopPointRef, departureTime, numberOfResults, includeIntermediateStops }) {
-    return `<?xml version="1.0" encoding="UTF-8"?>
-<Trias xmlns="http://www.vdv.de/trias" version="1.2">
-  <ServiceRequest>
-    <RequestTimestamp>${new Date().toISOString()}</RequestTimestamp>
-    <RequestPayload>
-      <TripRequest>
-        <Origin>
-          <LocationRef>
-            <StopPointRef>${originStopPointRef}</StopPointRef>
-          </LocationRef>
-          <DepArrTime>${departureTime}</DepArrTime>
-        </Origin>
-        <Destination>
-          <LocationRef>
-            <StopPointRef>${destinationStopPointRef}</StopPointRef>
-          </LocationRef>
-        </Destination>
-        <Params>
-          <NumberOfResults>${numberOfResults}</NumberOfResults>
-          <IncludeIntermediateStops>${includeIntermediateStops ? "true" : "false"}</IncludeIntermediateStops>
-          <IncludeTrackSections>false</IncludeTrackSections>
-          <IncludeFares>false</IncludeFares>
-        </Params>
-      </TripRequest>
-    </RequestPayload>
-  </ServiceRequest>
-</Trias>`;
+  buildTripRequestXml({ requestorRef, originStopPointRef, destinationStopPointRef, departureTime, numberOfResults, includeIntermediateStops }) {
+    return `
+    <?xml version="1.0" encoding="UTF-8"?>
+<Trias version="1.2" xmlns="http://www.vdv.de/trias" xmlns:siri="http://www.siri.org.uk/siri" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.vdv.de/trias ../trias-xsd-v1.1/Trias.xsd">
+    <ServiceRequest>
+        <RequestTimestamp>${departureTime}</RequestTimestamp>
+        <siri:RequestorRef>${requestorRef}</siri:RequestorRef>
+        <RequestPayload>
+            <TripRequest>
+                <Origin>
+                    <LocationRef>
+                        <StopPointRef>${originStopPointRef}</StopPointRef>
+                    </LocationRef>
+                    <DepArrTime>${departureTime}</DepArrTime>
+                </Origin>
+                <Destination>
+                    <LocationRef>
+                        <StopPointRef>${destinationStopPointRef}</StopPointRef>
+                    </LocationRef>
+                </Destination>
+                <Params>
+                    <NumberOfResults>${numberOfResults}</NumberOfResults>
+                    <IncludeTrackSections>true</IncludeTrackSections>
+                    <IncludeIntermediateStops>true</IncludeIntermediateStops>
+                    <IncludeLegProjection>true</IncludeLegProjection>
+                    <IncludeFares>true</IncludeFares>
+                </Params>
+            </TripRequest>
+        </RequestPayload>
+    </ServiceRequest>
+</Trias>`
   },
 
   async postXml(endpoint, xmlBody) {
@@ -71,79 +79,75 @@ module.exports = NodeHelper.create({
     if (typeof fetch !== "function") {
       throw new Error("fetch is not available. Use Node 18+ or add node-fetch.");
     }
+    Log.debug(`postXml: ${endpoint} ${JSON.stringify(xmlBody)}`);
 
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/xml; charset=UTF-8",
-        "Accept": "text/xml"
-      },
-      body: xmlBody
-    });
+    try {
+      const res = await request({
+        method: "POST",
+        uri: endpoint,
+        headers: {
+          "Content-Type": "text/xml; charset=UTF-8",
+          "Accept": "text/xml"
+        },
+        body: xmlBody,
+        resolveWithFullResponse: true
+      });
 
-    const text = await res.text();
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
-    return text;
+      //Log.debug(`postXml response ${res.statusCode} ${JSON.stringify(res.body)}`)
+
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw new Error(`HTTP ${res.statusCode}: ${res.body}`);
+      }
+
+      return res.body;
+    } catch (err) {
+      Log.error(`postXml failed ${err.message}`);
+      throw err;
+    }
+  },
+
+  findTripResults(obj, results = []) {
+    if (!obj || typeof obj !== "object") return results;
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === "trias:TripResult") {
+        results.push(...(Array.isArray(value) ? value : [value]));
+      } else {
+        this.findTripResults(value, results);
+      }
+    }
+
+    return results;
   },
 
   extractTrips(tripResponseXml) {
-    const json = this.parser.parse(tripResponseXml);
+    const parsed = this.parser.parse(tripResponseXml);
+    const tripResults = this.findTripResults(parsed);
 
-    const tripResults =
-      json?.Trias
-        ?.ServiceDelivery
-        ?.DeliveryPayload
-        ?.TripResponse
-        ?.TripResult;
+    let beautfiedResults = [];
 
-    if (!tripResults) return [];
+    for (const tripResult of tripResults) {
+      let leg = tripResult['trias:Trip']['trias:TripLeg'];
+      let start = leg['trias:TimedLeg']['trias:LegBoard']['trias:StopPointName']['trias:Text'];
+      let startTimetabledTime = leg['trias:TimedLeg']['trias:LegBoard']['trias:ServiceDeparture']['trias:TimetabledTime'];
+      let startEstimatedTime = leg['trias:TimedLeg']['trias:LegBoard']['trias:ServiceDeparture']['trias:EstimatedTime'];
+      let end = leg['trias:TimedLeg']['trias:LegAlight']['trias:StopPointName']['trias:Text'];
+      let endTimetabledTime = leg['trias:TimedLeg']['trias:LegAlight']['trias:ServiceArrival']['trias:TimetabledTime'];
+      let endEstimatedTime = leg['trias:TimedLeg']['trias:LegAlight']['trias:ServiceArrival']['trias:EstimatedTime'];
 
-    const resultsArray = Array.isArray(tripResults) ? tripResults : [tripResults];
-
-    const trips = [];
-
-    for (const r of resultsArray) {
-      const trip = r?.Trip;
-      if (!trip) continue;
-
-      const legs = trip.TripLeg ? (Array.isArray(trip.TripLeg) ? trip.TripLeg : [trip.TripLeg]) : [];
-
-      // Create a human-friendly summary: departure, arrival, duration, and first timed leg line info if present.
-      const summary = {
-        departureTime: trip?.StartTime || null,
-        arrivalTime: trip?.EndTime || null,
-        durationMinutes: trip?.Duration ? this.durationToMinutes(trip.Duration) : null,
-        legs: []
-      };
-
-      for (const leg of legs) {
-        if (leg.TimedLeg) {
-          const tl = leg.TimedLeg;
-          const board = tl.LegBoard || {};
-          const alight = tl.LegAlight || {};
-          const service = tl.Service || {};
-
-          summary.legs.push({
-            mode: service?.Mode?.PtMode || service?.Mode || "pt",
-            line: Array.isArray(service?.PublishedLineName)
-              ? service.PublishedLineName?.[0]?.Text
-              : service?.PublishedLineName?.Text || null,
-            journeyRef: service?.JourneyRef || null,
-            operatingDayRef: service?.OperatingDayRef || null,
-            from: board?.StopPointName?.Text || null,
-            to: alight?.StopPointName?.Text || null,
-            dep: board?.ServiceDeparture?.TimetabledTime || board?.ServiceDeparture?.EstimatedTime || null,
-            arr: alight?.ServiceArrival?.TimetabledTime || alight?.ServiceArrival?.EstimatedTime || null
-          });
-        } else if (leg.ContinuousLeg) {
-          summary.legs.push({ mode: "walk", line: "Walk" });
-        }
-      }
-
-      trips.push(summary);
+      beautfiedResults.push({
+        start: start,
+        startTimetabledTime: startTimetabledTime,
+        startEstimatedTime: startEstimatedTime,
+        end: end,
+        endTimetabledTime: endTimetabledTime,
+        endEstimatedTime: endEstimatedTime,
+      })
     }
 
-    return trips;
+    Log.debug(`beautfiedResults ${JSON.stringify(beautfiedResults)}`)
+
+    return beautfiedResults;
   },
 
   // TRIAS durations are often ISO 8601 duration like "PT17M"

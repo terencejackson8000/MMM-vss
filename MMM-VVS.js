@@ -3,6 +3,7 @@ Module.register("MMM-VVS", {
   defaults: {
     exampleContent: "",
     endpoint: "https://www.efa-bw.de/trias",
+    requestorRef: "",
 
     originStopPointRef: "",
     destinationStopPointRef: "",
@@ -21,14 +22,35 @@ Module.register("MMM-VVS", {
     this.sendFetch();
     setInterval(() => this.sendFetch(), this.config.updateInterval);
   },
+  
+  localIsoWithOffset(date = new Date()) {
+    const pad = n => String(n).padStart(2, "0");
+
+    const tzOffsetMin = -date.getTimezoneOffset();
+    const sign = tzOffsetMin >= 0 ? "+" : "-";
+    const hh = pad(Math.floor(Math.abs(tzOffsetMin) / 60));
+    const mm = pad(Math.abs(tzOffsetMin) % 60);
+
+    return (
+      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+      `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+      `.${String(date.getMilliseconds()).padStart(3, "0")}` +
+      `${sign}${hh}:${mm}`
+    );
+  },
 
   sendFetch() {
+    Log.debug("[MMM-VVS] sendFetch");
+    const now = this.localIsoWithOffset();
+    Log.debug(`[MMM-VVS] ${now}`);
     this.sendSocketNotification("VVS_FETCH", {
       endpoint: this.config.endpoint,
       originStopPointRef: this.config.originStopPointRef,
       destinationStopPointRef: this.config.destinationStopPointRef,
       numberOfResults: this.config.numberOfResults,
-      includeIntermediateStops: this.config.includeIntermediateStops
+      includeIntermediateStops: this.config.includeIntermediateStops,
+      requestorRef: this.config.requestorRef,
+      departureTime: now,
     });
   },
 
@@ -74,12 +96,14 @@ Module.register("MMM-VVS", {
     list.className = "small";
 
     for (const t of this.trips) {
+      let startTime = t.startEstimatedTime ?? t.startTimetabledTime;
+      let endTime = t.endEstimatedTime ?? t.endTimetabledTime;
       const row = document.createElement("div");
       row.style.marginTop = "8px";
 
       const headline = document.createElement("div");
       headline.className = "bright";
-      headline.innerText = `${this.formatTime(t.departureTime)} → ${this.formatTime(t.arrivalTime)} (${t.durationMinutes ?? "?"} min)`;
+      headline.innerText = `${this.formatTime(startTime)} → ${this.formatTime(endTime)} (${t.durationMinutes ?? "?"} min)`;
       row.appendChild(headline);
 
       const legs = document.createElement("div");
