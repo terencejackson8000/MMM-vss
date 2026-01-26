@@ -2,7 +2,6 @@ Module.register("MMM-VVS", {
 
   defaults: {
     // Backend and request configuration.
-    exampleContent: "",
     endpoint: "https://www.efa-bw.de/trias",
     requestorRef: "",
 
