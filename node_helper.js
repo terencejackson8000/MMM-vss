@@ -5,21 +5,25 @@ const Log = require("logger");
 
 module.exports = NodeHelper.create({
   start() {
+    // Keep namespaces intact for TRIAS tag lookups.
     this.parser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: false });
     Log.info("node_helper started");
   },
 
   async socketNotificationReceived(notification, payload) {
+    // Entry point from the MagicMirror frontend.
     Log.debug("socketNotificationReceived: " + notification);
     if (notification !== "VVS_FETCH") return;
 
     try {
       const { requestorRef, departureTime, endpoint, originStopPointRef, destinationStopPointRef, numberOfResults, includeIntermediateStops } = payload;
       Log.debug(`VVS_FETCH: ${endpoint} ${originStopPointRef} ${destinationStopPointRef}`);
+      // Guard against incomplete requests early.
       if (!endpoint || !originStopPointRef || !destinationStopPointRef) {
         throw new Error("Missing endpoint/originStopPointRef/destinationStopPointRef");
       }
 
+      // Build and post the TRIAS TripRequest XML.
       const tripXml = this.buildTripRequestXml({
         originStopPointRef,
         destinationStopPointRef,
@@ -40,6 +44,7 @@ module.exports = NodeHelper.create({
   },
 
   buildTripRequestXml({ requestorRef, originStopPointRef, destinationStopPointRef, departureTime, numberOfResults, includeIntermediateStops }) {
+    // Build a minimal TRIAS TripRequest with the configured parameters.
     return `
     <?xml version="1.0" encoding="UTF-8"?>
 <Trias version="1.2" xmlns="http://www.vdv.de/trias" xmlns:siri="http://www.siri.org.uk/siri" 
@@ -82,6 +87,7 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http:/
     Log.debug(`postXml: ${endpoint} ${JSON.stringify(xmlBody)}`);
 
     try {
+      // request-promise-native handles the HTTP POST and resolves with full response.
       const res = await request({
         method: "POST",
         uri: endpoint,
@@ -101,12 +107,14 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http:/
 
       return res.body;
     } catch (err) {
+      // Surface transport/HTTP errors to the frontend.
       Log.error(`postXml failed ${err.message}`);
       throw err;
     }
   },
 
   findTripResults(obj, results = []) {
+    // TRIAS responses are deeply nested; collect every TripResult node.
     if (!obj || typeof obj !== "object") return results;
 
     for (const [key, value] of Object.entries(obj)) {
@@ -121,6 +129,7 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http:/
   },
 
   extractTrips(tripResponseXml) {
+    // Parse XML to JSON, then normalize each TripResult into a compact object.
     const parsed = this.parser.parse(tripResponseXml);
     const tripResults = this.findTripResults(parsed);
 

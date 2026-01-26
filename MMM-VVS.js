@@ -1,6 +1,7 @@
 Module.register("MMM-VVS", {
 
   defaults: {
+    // Backend and request configuration.
     exampleContent: "",
     endpoint: "https://www.efa-bw.de/trias",
     requestorRef: "",
@@ -8,6 +9,7 @@ Module.register("MMM-VVS", {
     originStopPointRef: "",
     destinationStopPointRef: "",
 
+    // Polling and display options.
     updateInterval: 60 * 1000,
     numberOfResults: 3,
     includeIntermediateStops: true,
@@ -16,6 +18,7 @@ Module.register("MMM-VVS", {
   },
 
   start() {
+    // Initialize module state and kick off periodic fetches.
     this.trips = [];
     this.error = null;
 
@@ -24,6 +27,7 @@ Module.register("MMM-VVS", {
   },
   
   localIsoWithOffset(date = new Date()) {
+    // Create ISO-8601 timestamp with local timezone offset (TRIAS expects offset-aware time).
     const pad = n => String(n).padStart(2, "0");
 
     const tzOffsetMin = -date.getTimezoneOffset();
@@ -40,6 +44,7 @@ Module.register("MMM-VVS", {
   },
 
   sendFetch() {
+    // Dispatch the backend fetch with current timestamp and configuration.
     Log.debug("[MMM-VVS] sendFetch");
     const now = this.localIsoWithOffset();
     Log.debug(`[MMM-VVS] ${now}`);
@@ -55,6 +60,7 @@ Module.register("MMM-VVS", {
   },
 
   socketNotificationReceived(notification, payload) {
+    // Handle success/error results from the node helper.
     if (notification === "VVS_RESULT") {
       this.trips = payload.trips || [];
       this.error = null;
@@ -69,6 +75,7 @@ Module.register("MMM-VVS", {
   },
 
   getDom() {
+    // Render module output in the MagicMirror DOM.
     const wrapper = document.createElement("div");
 
     const title = document.createElement("div");
@@ -96,6 +103,7 @@ Module.register("MMM-VVS", {
     list.className = "small";
 
     for (const t of this.trips) {
+      // Prefer realtime estimates over timetabled times when available.
       let startTime = t.startEstimatedTime ?? t.startTimetabledTime;
       let endTime = t.endEstimatedTime ?? t.endTimetabledTime;
       const row = document.createElement("div");
@@ -108,6 +116,7 @@ Module.register("MMM-VVS", {
 
       const legs = document.createElement("div");
       legs.className = "dimmed";
+      // Show a compact list of leg modes or lines.
       legs.innerText = (t.legs || [])
         .map(l => l.mode === "walk" ? "Walk" : (l.line || l.mode || "PT"))
         .join(" · ");
@@ -121,6 +130,7 @@ Module.register("MMM-VVS", {
   },
 
   formatTime(iso) {
+    // Format ISO timestamps into local HH:MM display.
     if (!iso) return "?";
     const d = new Date(iso);
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
