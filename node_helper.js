@@ -34,7 +34,7 @@ module.exports = NodeHelper.create({
       });
 
       const xmlResponse = await this.postXml(endpoint, tripXml);
-      Log.debug(`Now extracting trips ${xmlResponse}`);
+      //Log.debug(`Now extracting trips ${xmlResponse}`);
       const trips = this.extractTrips(xmlResponse);
 
       this.sendSocketNotification("VVS_RESULT", { trips });
@@ -50,7 +50,7 @@ module.exports = NodeHelper.create({
 <Trias version="1.2" xmlns="http://www.vdv.de/trias" xmlns:siri="http://www.siri.org.uk/siri" 
 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.vdv.de/trias ../trias-xsd-v1.1/Trias.xsd">
     <ServiceRequest>
-        <RequestTimestamp>${departureTime}</RequestTimestamp>
+        <RequestTimestamp>${new Date().toISOString()}</RequestTimestamp>
         <siri:RequestorRef>${requestorRef}</siri:RequestorRef>
         <RequestPayload>
             <TripRequest>
@@ -58,7 +58,7 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http:/
                     <LocationRef>
                         <StopPointRef>${originStopPointRef}</StopPointRef>
                     </LocationRef>
-                    <DepArrTime>${departureTime}</DepArrTime>
+                    <DepArrTime>${new Date().toISOString()}</DepArrTime>
                 </Origin>
                 <Destination>
                     <LocationRef>
@@ -67,10 +67,10 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http:/
                 </Destination>
                 <Params>
                     <NumberOfResults>${numberOfResults}</NumberOfResults>
-                    <IncludeTrackSections>true</IncludeTrackSections>
-                    <IncludeIntermediateStops>true</IncludeIntermediateStops>
-                    <IncludeLegProjection>true</IncludeLegProjection>
-                    <IncludeFares>true</IncludeFares>
+                    <IncludeTrackSections>false</IncludeTrackSections>
+                    <IncludeIntermediateStops>false</IncludeIntermediateStops>
+                    <IncludeLegProjection>false</IncludeLegProjection>
+                    <IncludeFares>false</IncludeFares>
                 </Params>
             </TripRequest>
         </RequestPayload>
@@ -126,7 +126,14 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http:/
     const parsed = this.parser.parse(tripResponseXml);
     const tripResults = this.findTripResults(parsed);
 
-    const beautfiedResults = tripResults.map((tripResult) => {
+    Log.debug(`Count of trips ${tripResults.length}`)
+
+    const beautfiedResults = [];
+    const uniqueKeys = new Set();
+
+    for (const tripResult of tripResults) {
+      const resultId = tripResult["trias:ResultId"];
+      Log.debug(`resultID ${resultId}`);
       const trip = tripResult["trias:Trip"];
       const durationMinutes = this.durationToMinutes(trip["trias:Duration"]);
       const timedLeg = trip["trias:TripLeg"]["trias:TimedLeg"];
@@ -134,8 +141,20 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http:/
       const legAlight = timedLeg["trias:LegAlight"];
       const boardDeparture = legBoard["trias:ServiceDeparture"];
       const alightArrival = legAlight["trias:ServiceArrival"];
+      const uniqueKey = JSON.stringify({
+        legBoard,
+        legAlight,
+        boardDeparture,
+        alightArrival
+      });
 
-      return {
+      if (uniqueKeys.has(uniqueKey)) {
+        continue;
+      }
+
+      uniqueKeys.add(uniqueKey);
+
+      beautfiedResults.push({
         start: legBoard["trias:StopPointName"]["trias:Text"],
         startTimetabledTime: boardDeparture["trias:TimetabledTime"],
         startEstimatedTime: boardDeparture["trias:EstimatedTime"],
@@ -143,10 +162,10 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http:/
         endTimetabledTime: alightArrival["trias:TimetabledTime"],
         endEstimatedTime: alightArrival["trias:EstimatedTime"],
         durationMinutes
-      };
-    });
+      });
+    }
 
-    Log.debug(`beautfiedResults ${JSON.stringify(beautfiedResults)}`);
+    //Log.debug(`beautfiedResults ${JSON.stringify(beautfiedResults)}`);
 
     return beautfiedResults;
   },
